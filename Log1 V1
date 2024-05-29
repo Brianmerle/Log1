@@ -1,0 +1,162 @@
+//log1 V1
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <TinyGPS++.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <SD.h>
+
+// OLED display settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// GPS settings
+TinyGPSPlus gps;
+HardwareSerial &gpsSerial = Serial1;
+
+// Temperature sensor settings
+#define ONE_WIRE_BUS 10
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+DeviceAddress sensor1, sensor2;
+
+// SD card settings
+const int chipSelect = BUILTIN_SDCARD;
+
+// LED pin
+const int ledPin = 35;
+
+// Variables to store the last valid data
+int lastHours = -1, lastMinutes = -1, lastSeconds = -1;
+double lastAltitude = 0;
+float lastTemp1 = 0, lastTemp2 = 0;
+bool gpsInitialized = false;
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(115200);
+  gpsSerial.begin(9600); // Set GPS baud rate to 9600
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { // Updated address
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;);
+  }
+  display.display();
+  delay(2000);
+  display.clearDisplay();
+
+  // Initialize temperature sensors
+  sensors.begin();
+  if (sensors.getAddress(sensor1, 0)) {
+    sensors.setResolution(sensor1, 12);
+  }
+  if (sensors.getAddress(sensor2, 1)) {
+    sensors.setResolution(sensor2, 12);
+  }
+
+  // Initialize SD card
+  if (!SD.begin(chipSelect)) {
+    Serial.println("SD card initialization failed!");
+    return;
+  }
+  Serial.println("SD card initialized.");
+
+  // Initialize LED pin
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, LOW); // Ensure the LED is off initially
+}
+
+void loop() {
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+
+  if (gps.location.isUpdated() && gps.altitude.isUpdated() && gps.time.isUpdated()) {
+    // Get GPS data
+    int hours = gps.time.hour();
+    int minutes = gps.time.minute();
+    int seconds = gps.time.second();
+    double latitude = gps.location.lat();
+    double longitude = gps.location.lng();
+    double altitude = gps.altitude.meters();
+
+    // Adjust for UTC-5 (Daylight Saving Time)
+    hours = (hours + 19) % 24;
+
+    // Get temperature data
+    sensors.requestTemperatures();
+    float temp1 = sensors.getTempC(sensor1);
+    float temp2 = sensors.getTempC(sensor2);
+
+    // Log data to SD card
+    File dataFile = SD.open("datalog.txt", FILE_WRITE);
+    if (dataFile) {
+      dataFile.print(hours); dataFile.print(":");
+      dataFile.print(minutes); dataFile.print(":");
+      dataFile.print(seconds); dataFile.print(",");
+      dataFile.print(latitude, 6); dataFile.print(",");
+      dataFile.print(longitude, 6); dataFile.print(",");
+      dataFile.print(altitude); dataFile.print(",");
+      dataFile.print(temp1); dataFile.print(",");
+      dataFile.println(temp2);
+      dataFile.close();
+    } else {
+      Serial.println("Error opening datalog.txt");
+    }
+
+    // Control the LED based on altitude
+    if (altitude > 200) {
+      digitalWrite(ledPin, HIGH); // Turn on LED if altitude is over 200 meters
+    } else {
+      digitalWrite(ledPin, LOW); // Turn off LED if altitude is 200 meters or below
+    }
+
+    // Update display only if data has changed
+    if (hours != lastHours || minutes != lastMinutes || seconds != lastSeconds || altitude != lastAltitude || temp1 != lastTemp1 || temp2 != lastTemp2) {
+      lastHours = hours;
+      lastMinutes = minutes;
+      lastSeconds = seconds;
+      lastAltitude = altitude;
+      lastTemp1 = temp1;
+      lastTemp2 = temp2;
+
+      display.clearDisplay();
+      display.setTextSize(2);
+      display.setTextColor(SSD1306_WHITE);
+
+      String timeString = String(hours) + ":" + (minutes < 10 ? "0" : "") + String(minutes) + ":" + (seconds < 10 ? "0" : "") + String(seconds);
+      display.setCursor((SCREEN_WIDTH - timeString.length() * 12) / 2, 0);
+      display.print(timeString);
+
+      String altitudeString = String(altitude, 1) + " m";
+      display.setCursor(SCREEN_WIDTH - (altitudeString.length() * 12), 16);
+      display.print(altitudeString);
+
+      String temp1String = String(temp1, 1) + " C";
+      display.setCursor(SCREEN_WIDTH - (temp1String.length() * 12), 32);
+      display.print(temp1String);
+
+      String temp2String = String(temp2, 1) + " C";
+      display.setCursor(SCREEN_WIDTH - (temp2String.length() * 12), 48);
+      display.print(temp2String);
+
+      display.display();
+    }
+    
+    gpsInitialized = true;
+  }
+
+  if (!gpsInitialized) {
+    // Display message indicating GPS is initializing
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, (SCREEN_HEIGHT - 16) / 2); // Center vertically
+    display.print("GPS INIT");
+    display.display();
+  }
+}
